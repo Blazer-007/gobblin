@@ -20,20 +20,28 @@ package org.apache.gobblin.data.management.copy.iceberg;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.function.Predicate;
 
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.ManifestReader;
+import org.apache.iceberg.ReplacePartitions;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.StructLike;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.FileIO;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -77,10 +85,16 @@ public class IcebergTable {
   private final String datasetDescriptorPlatform;
   private final TableOperations tableOps;
   private final String catalogUri;
+  private final Table table;
 
   @VisibleForTesting
   IcebergTable(TableIdentifier tableId, TableOperations tableOps, String catalogUri) {
-    this(tableId, tableId.toString(), DatasetConstants.PLATFORM_ICEBERG, tableOps, catalogUri);
+    this(tableId, tableId.toString(), DatasetConstants.PLATFORM_ICEBERG, tableOps, catalogUri, null);
+  }
+
+  @VisibleForTesting
+  IcebergTable(TableIdentifier tableId, TableOperations tableOps, String catalogUri, Table table) {
+    this(tableId, tableId.toString(), DatasetConstants.PLATFORM_ICEBERG, tableOps, catalogUri, table);
   }
 
   /** @return metadata info limited to the most recent (current) snapshot */
@@ -215,5 +229,31 @@ public class IcebergTable {
       // use current destination metadata as 'base metadata' and source as 'updated metadata' while committing
       this.tableOps.commit(dstMetadata, srcMetadata.replaceProperties(dstMetadata.properties()));
     }
+  }
+
+  public List<DataFile> getPartitionSpecificDataFiles(Predicate<StructLike> icebergPartitionFilterPredicate) throws IOException {
+    List<DataFile> partitionDataFiles = new ArrayList<>();
+    TableMetadata tableMetadata = accessTableMetadata();
+    Snapshot currentSnapshot = tableMetadata.currentSnapshot();
+    List<ManifestFile> dataManifestFiles = currentSnapshot.dataManifests(this.tableOps.io());
+    for (ManifestFile manifestFile : dataManifestFiles) {
+      ManifestReader<DataFile> manifestReader = ManifestFiles.read(manifestFile, this.tableOps.io());
+      CloseableIterator<DataFile> dataFiles = manifestReader.iterator();
+      dataFiles.forEachRemaining(dataFile -> {
+        if (icebergPartitionFilterPredicate.test(dataFile.partition())) {
+          partitionDataFiles.add(dataFile.copy());
+        }
+      });
+    }
+    return partitionDataFiles;
+  }
+
+  protected void replacePartitions(List<DataFile> dataFiles) {
+    if (dataFiles.isEmpty()) {
+      return;
+    }
+    ReplacePartitions replacePartitions = this.table.newReplacePartitions();
+    dataFiles.forEach(replacePartitions::addFile);
+    replacePartitions.commit();
   }
 }
