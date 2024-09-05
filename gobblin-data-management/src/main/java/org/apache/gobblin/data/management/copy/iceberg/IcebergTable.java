@@ -239,6 +239,8 @@ public class IcebergTable {
     for (ManifestFile manifestFile : dataManifestFiles) {
       ManifestReader<DataFile> manifestReader = ManifestFiles.read(manifestFile, this.tableOps.io());
       CloseableIterator<DataFile> dataFiles = manifestReader.iterator();
+      //TODO: probably create a new datainfo class and add details by unwrapping the data file to handle partition data
+      //TODO: classcast exception as .copy() method is not full proof.
       dataFiles.forEachRemaining(dataFile -> {
         if (icebergPartitionFilterPredicate.test(dataFile.partition())) {
           partitionDataFiles.add(dataFile.copy());
@@ -255,5 +257,7 @@ public class IcebergTable {
     ReplacePartitions replacePartitions = this.table.newReplacePartitions();
     dataFiles.forEach(replacePartitions::addFile);
     replacePartitions.commit();
+    //TODO: do validate again whether below statement is required or not
+    this.table.refresh();
   }
 }
