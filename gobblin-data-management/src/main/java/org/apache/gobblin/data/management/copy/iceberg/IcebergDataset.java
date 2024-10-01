@@ -30,6 +30,7 @@ import java.util.Properties;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.apache.gobblin.data.management.copy.writer.FileAwareInputStreamDataWriter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -177,6 +178,7 @@ public class IcebergDataset implements PrioritizedCopyableDataset {
 
     copyEntities.add(createPostPublishStep(atomicGetPathsResult.getTableMetadata(), destTableMetadataBeforeSrcRead));
     log.info("~{}~ generated {} copy entities", fileSet, copyEntities.size());
+    log.info("Copy Entities : {}", copyEntities);
     return copyEntities;
   }
 
