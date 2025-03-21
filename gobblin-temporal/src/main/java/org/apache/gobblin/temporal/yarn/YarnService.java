@@ -284,7 +284,7 @@ class YarnService extends AbstractIdleService {
       }
 
       if (this.jobSummaryEvent.getJobState() != null && !this.jobSummaryEvent.getJobState().getState().isSuccess()) {
-        this.amrmClientAsync.unregisterApplicationMaster(FinalApplicationStatus.FAILED, this.jobSummaryEvent.getIssuesSummary(), null);
+        this.amrmClientAsync.unregisterApplicationMaster(FinalApplicationStatus.FAILED, StringUtils.defaultString(this.jobSummaryEvent.getIssuesSummary()), null);
       } else {
         this.amrmClientAsync.unregisterApplicationMaster(FinalApplicationStatus.SUCCEEDED, StringUtils.defaultString(this.jobSummaryEvent.getIssuesSummary()), null);
       }

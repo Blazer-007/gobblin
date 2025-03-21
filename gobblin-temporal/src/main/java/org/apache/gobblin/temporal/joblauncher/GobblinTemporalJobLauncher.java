@@ -116,7 +116,7 @@ public abstract class GobblinTemporalJobLauncher extends GobblinJobLauncher {
     TextStringBuilder sb = new TextStringBuilder();
     try {
       List<Issue> issues = this.getIssueRepository().getAll();
-      if (issues.size() == 0) {
+      if (issues.isEmpty()) {
         return "";
       }
       sb.appendln("");
