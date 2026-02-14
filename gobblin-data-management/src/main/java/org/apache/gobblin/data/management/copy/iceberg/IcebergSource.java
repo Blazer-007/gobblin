@@ -20,6 +20,10 @@ package org.apache.gobblin.data.management.copy.iceberg;
 import java.io.IOException;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -119,17 +123,24 @@ public class IcebergSource extends FileBasedSource<String, FileAwareInputStream>
   public static final String ICEBERG_FILES_PER_WORKUNIT = "iceberg.files.per.workunit";
   public static final String ICEBERG_FILTER_ENABLED = "iceberg.filter.enabled";
   public static final String ICEBERG_FILTER_DATE = "iceberg.filter.date"; // Date value (e.g., 2025-04-01 or CURRENT_DATE)
+  public static final String ICEBERG_FILTER_DATE_PATTERN = "iceberg.filter.date.pattern";
+  public static final String DEFAULT_ICEBERG_FILTER_DATE_PATTERN = "yyyy-MM-dd";
   public static final String ICEBERG_LOOKBACK_DAYS = "iceberg.lookback.days";
+  public static final String ICEBERG_LOOKBACK_HOURS = "iceberg.lookback.hours";
+  public static final String ICEBERG_LOOKBACK_MINUTES = "iceberg.lookback.minutes";
   public static final int DEFAULT_LOOKBACK_DAYS = 1;
+  public static final int DEFAULT_LOOKBACK_HOURS = 1;
+  public static final int DEFAULT_LOOKBACK_MINUTES = 1;
   public static final String ICEBERG_PARTITION_COLUMN = "iceberg.partition.column"; // configurable partition column name
   public static final String DEFAULT_DATE_PARTITION_COLUMN = "datepartition"; // default date partition column name
   public static final String CURRENT_DATE_PLACEHOLDER = "CURRENT_DATE"; // placeholder for current date
   public static final String ICEBERG_PARTITION_KEY = "iceberg.partition.key";
   public static final String ICEBERG_PARTITION_VALUES = "iceberg.partition.values";
   public static final String ICEBERG_FILE_PARTITION_PATH = "iceberg.file.partition.path";
+  @Deprecated
   public static final String ICEBERG_HOURLY_PARTITION_ENABLED = "iceberg.hourly.partition.enabled";
+  @Deprecated
   public static final boolean DEFAULT_HOURLY_PARTITION_ENABLED = true;
-  private static final String HOURLY_PARTITION_SUFFIX = "-00";
   private static final String WORK_UNIT_WEIGHT = "iceberg.workUnitWeight";
 
   // Delete configuration - similar to RecursiveCopyableDataset
@@ -241,13 +252,13 @@ public class IcebergSource extends FileBasedSource<String, FileAwareInputStream>
    * </ol>
    *
    * <p>The partition column name is configurable via {@code iceberg.partition.column}
-   * (defaults to {@value #DEFAULT_DATE_PARTITION_COLUMN}). The date value is specified separately via
-   * {@code iceberg.filter.date} in standard format ({@code yyyy-MM-dd}).
+   * (defaults to {@value #DEFAULT_DATE_PARTITION_COLUMN}). Date filtering supports configurable
+   * patterns through {@code iceberg.filter.date.pattern}: {@code yyyy-MM-dd}, {@code yyyy-MM-dd-HH},
+   * and {@code yyyy-MM-dd-HH-mm}.
    *
-   * <p><b>Hourly Partition Support:</b> By default, the {@code -00} suffix is appended to all partition values
-   * for tables using hourly partition format ({@code yyyy-MM-dd-HH}). For tables using standard daily partition
-   * format ({@code yyyy-MM-dd}), set {@code iceberg.hourly.partition.enabled=false}. Users should always provide
-   * dates in standard {@code yyyy-MM-dd} format; the hour suffix is automatically managed.
+   * <p>Lookback property is chosen by pattern granularity:
+   * {@code iceberg.lookback.days} for daily, {@code iceberg.lookback.hours} for hourly,
+   * and {@code iceberg.lookback.minutes} for minute-level partitions.
    *
    * <p><b>Configuration Examples:</b>
    * <ul>
@@ -280,48 +291,7 @@ public class IcebergSource extends FileBasedSource<String, FileAwareInputStream>
     Preconditions.checkArgument(!StringUtils.isBlank(dateValue),
       "iceberg.filter.date is required when iceberg.filter.enabled=true");
 
-    // Handle CURRENT_DATE placeholder for flows
-    if (CURRENT_DATE_PLACEHOLDER.equalsIgnoreCase(dateValue)) {
-      dateValue = LocalDate.now().toString();
-      log.info("Resolved {} placeholder to current date: {}", CURRENT_DATE_PLACEHOLDER, dateValue);
-    }
-
-    // Apply lookback period for date partitions
-    // lookbackDays=1 (default) means copy only the specified date
-    // lookbackDays=3 means copy specified date + 2 previous days (total 3 days)
-    int lookbackDays = state.getPropAsInt(ICEBERG_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS);
-    List<String> values = Lists.newArrayList();
-
-    if (lookbackDays >= 1) {
-      log.info("Applying lookback period of {} days for date partition column '{}': {}", lookbackDays, datePartitionColumn, dateValue);
-
-      // Check if hourly partitioning is enabled
-      boolean isHourlyPartition = state.getPropAsBoolean(ICEBERG_HOURLY_PARTITION_ENABLED, DEFAULT_HOURLY_PARTITION_ENABLED);
-
-      // Parse the date in yyyy-MM-dd format
-      LocalDate start;
-      try {
-        start = LocalDate.parse(dateValue);
-      } catch (java.time.format.DateTimeParseException e) {
-        String errorMsg = String.format(
-          "Invalid date format for '%s': '%s'. Expected format: yyyy-MM-dd. Error: %s",
-          ICEBERG_FILTER_DATE, dateValue, e.getMessage());
-        log.error(errorMsg);
-        throw new IllegalArgumentException(errorMsg, e);
-      }
-
-      for (int i = 0; i < lookbackDays; i++) {
-        String dateOnly = start.minusDays(i).toString();
-        // Append hour suffix if hourly partitioning is enabled
-        String partitionValue = isHourlyPartition ? dateOnly + HOURLY_PARTITION_SUFFIX : dateOnly;
-        values.add(partitionValue);
-        log.info("Including partition: {}={}", datePartitionColumn, partitionValue);
-      }
-    } else {
-      log.error("lookbackDays < 1, cannot apply lookback. lookbackDays={}", lookbackDays);
-      throw new IllegalArgumentException(String.format(
-        "lookback.days must be >= 1, got: %d", lookbackDays));
-    }
+    List<String> values = getPartitionValuesWithLookback(state, dateValue, datePartitionColumn);
 
     // Store partition info on state for downstream use (extractor, destination path mapping)
     state.setProp(ICEBERG_PARTITION_KEY, datePartitionColumn);
@@ -340,6 +310,168 @@ public class IcebergSource extends FileBasedSource<String, FileAwareInputStream>
     log.info("Discovered {} data files for partitions: {}", filesWithPartitions.size(), values);
 
     return filesWithPartitions;
+  }
+
+  private List<String> getPartitionValuesWithLookback(SourceState state, String dateValue, String datePartitionColumn) {
+    DatePartitionPatternResolver patternResolver = DatePartitionPatternResolver.from(state);
+    String resolvedDateValue = patternResolver.resolveInputDate(dateValue);
+    LookbackResolution lookbackResolution = patternResolver.resolveLookback(state);
+
+    log.info("Applying lookback with pattern {}, strategy={}, lookback={}, partition column={}, startValue={}",
+        patternResolver.getPattern(), lookbackResolution.strategy.lookbackProperty,
+        lookbackResolution.lookbackWindowSize, datePartitionColumn, resolvedDateValue);
+
+    List<String> values = patternResolver.generateLookbackValues(resolvedDateValue, lookbackResolution);
+    for (String value : values) {
+      log.info("Including partition: {}={}", datePartitionColumn, value);
+    }
+    return values;
+  }
+
+  private enum DatePartitionGranularity {
+    DAY,
+    HOUR,
+    MINUTE
+  }
+
+  private enum LookbackStrategy {
+    DAYS(ICEBERG_LOOKBACK_DAYS, DEFAULT_LOOKBACK_DAYS, ChronoUnit.DAYS),
+    HOURS(ICEBERG_LOOKBACK_HOURS, DEFAULT_LOOKBACK_HOURS, ChronoUnit.HOURS),
+    MINUTES(ICEBERG_LOOKBACK_MINUTES, DEFAULT_LOOKBACK_MINUTES, ChronoUnit.MINUTES);
+
+    private final String lookbackProperty;
+    private final int defaultLookback;
+    private final ChronoUnit chronoUnit;
+
+    LookbackStrategy(String lookbackProperty, int defaultLookback, ChronoUnit chronoUnit) {
+      this.lookbackProperty = lookbackProperty;
+      this.defaultLookback = defaultLookback;
+      this.chronoUnit = chronoUnit;
+    }
+  }
+
+  private static final class LookbackResolution {
+    private final int lookbackWindowSize;
+    private final LookbackStrategy strategy;
+
+    private LookbackResolution(int lookbackWindowSize, LookbackStrategy strategy) {
+      this.lookbackWindowSize = lookbackWindowSize;
+      this.strategy = strategy;
+    }
+  }
+
+  private static final class DatePartitionPatternResolver {
+    private final String pattern;
+    private final DateTimeFormatter formatter;
+    private final DatePartitionGranularity granularity;
+
+    private DatePartitionPatternResolver(String pattern, DateTimeFormatter formatter, DatePartitionGranularity granularity) {
+      this.pattern = pattern;
+      this.formatter = formatter;
+      this.granularity = granularity;
+    }
+
+    static DatePartitionPatternResolver from(SourceState state) {
+      String datePattern = state.getProp(ICEBERG_FILTER_DATE_PATTERN, DEFAULT_ICEBERG_FILTER_DATE_PATTERN);
+      DatePartitionGranularity resolvedGranularity;
+      if ("yyyy-MM-dd".equals(datePattern)) {
+        resolvedGranularity = DatePartitionGranularity.DAY;
+      } else if ("yyyy-MM-dd-HH".equals(datePattern)) {
+        resolvedGranularity = DatePartitionGranularity.HOUR;
+      } else if ("yyyy-MM-dd-HH-mm".equals(datePattern)) {
+        resolvedGranularity = DatePartitionGranularity.MINUTE;
+      } else {
+        throw new IllegalArgumentException(String.format(
+            "Unsupported value for %s: '%s'. Supported patterns: yyyy-MM-dd, yyyy-MM-dd-HH, yyyy-MM-dd-HH-mm",
+            ICEBERG_FILTER_DATE_PATTERN, datePattern));
+      }
+      return new DatePartitionPatternResolver(datePattern, DateTimeFormatter.ofPattern(datePattern), resolvedGranularity);
+    }
+
+    String getPattern() {
+      return this.pattern;
+    }
+
+    LookbackResolution resolveLookback(SourceState state) {
+      LookbackStrategy strategy;
+      if (this.granularity == DatePartitionGranularity.DAY) {
+        strategy = LookbackStrategy.DAYS;
+      } else if (this.granularity == DatePartitionGranularity.HOUR) {
+        // Backward compatibility: prefer explicit hours, otherwise fallback to days with HH=00 semantics.
+        strategy = state.contains(ICEBERG_LOOKBACK_HOURS) ? LookbackStrategy.HOURS : LookbackStrategy.DAYS;
+      } else {
+        if (state.contains(ICEBERG_LOOKBACK_MINUTES)) {
+          strategy = LookbackStrategy.MINUTES;
+        } else if (state.contains(ICEBERG_LOOKBACK_HOURS)) {
+          strategy = LookbackStrategy.HOURS;
+        } else if (state.contains(ICEBERG_LOOKBACK_DAYS)) {
+          strategy = LookbackStrategy.DAYS;
+        } else {
+          strategy = LookbackStrategy.MINUTES;
+        }
+      }
+
+      int lookback = state.getPropAsInt(strategy.lookbackProperty, strategy.defaultLookback);
+      if (lookback < 1) {
+        throw new IllegalArgumentException(String.format("%s must be >= 1, got: %d",
+            strategy.lookbackProperty, lookback));
+      }
+      return new LookbackResolution(lookback, strategy);
+    }
+
+    String resolveInputDate(String configuredDateValue) {
+      if (CURRENT_DATE_PLACEHOLDER.equalsIgnoreCase(configuredDateValue)) {
+        return truncateNow().format(this.formatter);
+      }
+      return configuredDateValue;
+    }
+
+    List<String> generateLookbackValues(String startValue, LookbackResolution lookbackResolution) {
+      LocalDateTime anchorDateTime = normalizeAnchorDateTime(parseToAnchorDateTime(startValue), lookbackResolution.strategy);
+      List<String> values = Lists.newArrayList();
+      for (int i = 0; i < lookbackResolution.lookbackWindowSize; i++) {
+        LocalDateTime candidateDateTime = anchorDateTime.minus(i, lookbackResolution.strategy.chronoUnit);
+        values.add(candidateDateTime.format(this.formatter));
+      }
+      return values;
+    }
+
+
+    private LocalDateTime normalizeAnchorDateTime(LocalDateTime anchorDateTime, LookbackStrategy lookbackStrategy) {
+      if (lookbackStrategy == LookbackStrategy.DAYS && this.granularity == DatePartitionGranularity.HOUR) {
+        return anchorDateTime.truncatedTo(ChronoUnit.DAYS);
+      }
+      if (lookbackStrategy == LookbackStrategy.DAYS && this.granularity == DatePartitionGranularity.MINUTE) {
+        return anchorDateTime.truncatedTo(ChronoUnit.DAYS);
+      }
+      if (lookbackStrategy == LookbackStrategy.HOURS && this.granularity == DatePartitionGranularity.MINUTE) {
+        return anchorDateTime.truncatedTo(ChronoUnit.HOURS);
+      }
+      return anchorDateTime;
+    }
+
+    private LocalDateTime parseToAnchorDateTime(String value) {
+      try {
+        if (this.granularity == DatePartitionGranularity.DAY) {
+          return LocalDate.parse(value, this.formatter).atStartOfDay();
+        }
+        return LocalDateTime.parse(value, this.formatter);
+      } catch (DateTimeParseException e) {
+        throw new IllegalArgumentException(String.format(
+            "Invalid date value '%s' for pattern '%s' (%s)", value, this.pattern, ICEBERG_FILTER_DATE), e);
+      }
+    }
+
+    private LocalDateTime truncateNow() {
+      LocalDateTime now = LocalDateTime.now();
+      if (this.granularity == DatePartitionGranularity.DAY) {
+        return now.truncatedTo(ChronoUnit.DAYS);
+      }
+      if (this.granularity == DatePartitionGranularity.HOUR) {
+        return now.truncatedTo(ChronoUnit.HOURS);
+      }
+      return now.truncatedTo(ChronoUnit.MINUTES);
+    }
   }
 
   /**
