@@ -17,6 +17,7 @@
 
 package org.apache.gobblin.metrics.event.lineage;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -28,12 +29,16 @@ import org.apache.gobblin.broker.gobblin_scopes.JobScopeInstance;
 import org.apache.gobblin.broker.gobblin_scopes.TaskScopeInstance;
 import org.apache.gobblin.broker.iface.SharedResourcesBroker;
 import org.apache.gobblin.configuration.State;
+import org.apache.gobblin.configuration.WorkUnitState;
 import org.apache.gobblin.dataset.DatasetConstants;
 import org.apache.gobblin.dataset.DatasetDescriptor;
 import org.apache.gobblin.dataset.Descriptor;
 import org.apache.gobblin.dataset.PartitionDescriptor;
 import org.apache.gobblin.metrics.GobblinTrackingEvent;
+import org.apache.gobblin.metrics.MetricContext;
 import org.apache.gobblin.metrics.event.GobblinEventBuilder;
+import org.apache.gobblin.metrics.notification.EventNotification;
+import org.apache.gobblin.metrics.notification.Notification;
 
 import org.testng.Assert;
 import org.testng.annotations.Test;
@@ -215,5 +220,43 @@ public class LineageEventTest {
     }
 
     Assert.fail("Could not find a matching lineage with destination: " + destination);
+  }
+
+  @Test
+  public void testSubmitLineageEvent() {
+    final String topic = "testTopic";
+    final String kafka = "kafka";
+    final String hdfs = "hdfs";
+
+    LineageInfo lineageInfo = getLineageInfo();
+    WorkUnitState state = new WorkUnitState();
+    DatasetDescriptor source = new DatasetDescriptor(kafka, topic);
+    lineageInfo.setSource(source, state);
+    DatasetDescriptor destination = new DatasetDescriptor(hdfs, "/data/tracking");
+    lineageInfo.putDestination(destination, 0, state);
+
+    MetricContext metricContext = new MetricContext.Builder("testSubmitLineageEventContext").build();
+    List<GobblinTrackingEvent> receivedEvents = new ArrayList<>();
+    metricContext.addNotificationTarget(new com.google.common.base.Function<Notification, Void>() {
+      @Override
+      public Void apply(Notification notification) {
+        if (notification instanceof EventNotification) {
+          receivedEvents.add(((EventNotification) notification).getEvent());
+        }
+        return null;
+      }
+    });
+
+    List<WorkUnitState> states = Lists.newArrayList(state);
+    LineageInfo.submitLineageEvent(topic, states, metricContext);
+
+    Assert.assertEquals(receivedEvents.size(), 1);
+    GobblinTrackingEvent trackingEvent = receivedEvents.get(0);
+    Assert.assertTrue(LineageEventBuilder.isLineageEvent(trackingEvent));
+    Assert.assertEquals(trackingEvent.getName(), topic);
+    Assert.assertEquals(trackingEvent.getNamespace(), LineageEventBuilder.LINEAGE_EVENT_NAMESPACE);
+    LineageEventBuilder lineageEvent = LineageEventBuilder.fromEvent(trackingEvent);
+    Assert.assertEquals(lineageEvent.getSource(), source);
+    Assert.assertEquals(lineageEvent.getDestination(), destination);
   }
 }
