@@ -351,11 +351,13 @@ public class IcebergSourceTest {
     m.setAccessible(true);
     m.invoke(icebergSource, sourceState, mockTable);
 
-    // Assert format rather than exact value to avoid clock-dependent flakiness
+    // Legacy daily lookback with CURRENT_DATE should truncate to midnight (-00)
     String partitionValues = sourceState.getProp(IcebergSource.ICEBERG_PARTITION_VALUES);
     Assert.assertNotNull(partitionValues, "Partition values should be set");
     Assert.assertTrue(partitionValues.matches("\\d{4}-\\d{2}-\\d{2}-\\d{2}"),
         "Should resolve to yyyy-MM-dd-HH format, got: " + partitionValues);
+    Assert.assertTrue(partitionValues.endsWith("-00"),
+        "Legacy daily lookback with CURRENT_DATE should produce -00 suffix, got: " + partitionValues);
   }
 
   @Test

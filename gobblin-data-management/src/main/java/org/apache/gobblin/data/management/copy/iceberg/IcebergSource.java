@@ -22,6 +22,7 @@ import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -397,6 +398,14 @@ public class IcebergSource extends FileBasedSource<String, FileAwareInputStream>
     } else {
       Preconditions.checkArgument(lookbackDays >= 1,
         "iceberg.lookback.days must be >= 1, got: %s", lookbackDays);
+      // For legacy hourly format (iceberg.partition.value.datetime.format not set),
+      // truncate CURRENT_DATE to midnight so daily lookback always produces -00 suffix,
+      // matching the behavior of static dates which parse via atStartOfDay().
+      boolean isCustomFormat = state.contains(ICEBERG_PARTITION_VALUE_DATETIME_FORMAT);
+      if (CURRENT_DATE_PLACEHOLDER.equalsIgnoreCase(dateValue) && !isCustomFormat) {
+        startDateTime = startDateTime.truncatedTo(ChronoUnit.DAYS);
+        log.info("Truncated CURRENT_DATE to midnight for legacy daily lookback: {}", startDateTime);
+      }
       log.info("Daily lookback: {} day(s) for column '{}' starting at {}",
         lookbackDays, datePartitionColumn, startDateTime);
       filterResult = IcebergPartitionFilterGenerator.forDays(
