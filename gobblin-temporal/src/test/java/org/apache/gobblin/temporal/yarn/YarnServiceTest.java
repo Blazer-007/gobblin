@@ -46,6 +46,8 @@ import com.typesafe.config.ConfigFactory;
 import com.typesafe.config.ConfigValueFactory;
 import com.google.common.eventbus.EventBus;
 
+import org.apache.gobblin.cluster.event.JobSummaryEvent;
+import org.apache.gobblin.runtime.JobState;
 import org.apache.gobblin.yarn.GobblinYarnConfigurationKeys;
 
 import static org.mockito.Mockito.*;
@@ -125,5 +127,27 @@ public class YarnServiceTest {
     YarnService.ContainerInfo containerInfo = yarnService.new ContainerInfo(container, WorkforceProfiles.BASELINE_NAME_RENDERING, workerProfile);
     String command = containerInfo.getStartupCommand();
     Assert.assertTrue(command.contains("-Xmx" + expectedJvmMemory + "M"));
+  }
+
+  @Test
+  public void testHandleJobFailureEvent() throws Exception {
+    YarnService yarnService = new YarnService(
+        this.defaultConfigs,
+        "testApplicationName",
+        "testApplicationId",
+        yarnConfiguration,
+        mockFileSystem,
+        eventBus
+    );
+
+    yarnService.startUp();
+
+    eventBus.post(new JobSummaryEvent(new JobState("name","id"), "summary"));
+
+    // Waiting for the event to be handled
+    Thread.sleep(100);
+    Assert.assertEquals(yarnService.jobSummaryEvent.getJobState().getJobName(),"name");
+    Assert.assertEquals(yarnService.jobSummaryEvent.getJobState().getJobId(),"id");
+    Assert.assertEquals(yarnService.jobSummaryEvent.getIssuesSummary(),"summary");
   }
 }
