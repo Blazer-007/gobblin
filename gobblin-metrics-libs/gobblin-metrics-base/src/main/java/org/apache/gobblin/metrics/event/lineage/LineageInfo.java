@@ -349,7 +349,10 @@ public final class LineageInfo {
   public static void submitLineageEvent(String dataset, Collection<? extends WorkUnitState> states, MetricContext metricContext) {
     Collection<LineageEventBuilder> events = LineageInfo.load(states);
     // Send events
-    events.forEach(event -> EventSubmitter.submit(metricContext, event));
+    events.forEach(event -> {
+      log.debug("Adding lineage event to reporting queue: {}", event);
+      EventSubmitter.submit(metricContext, event);
+    });
     log.info(String.format("Submitted %d lineage events for dataset %s", events.size(), dataset));
   }
 }
